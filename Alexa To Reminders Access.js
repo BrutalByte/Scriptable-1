@@ -55,7 +55,7 @@ const withVar = "with"
 //withoutVar below needs to be set to your language's version of the word 'without'
 const withoutVar = "without"
 
-main();
+await main();
 Script.complete();
 
 async function checkIfUserIsAuthenticated() {
@@ -63,7 +63,6 @@ async function checkIfUserIsAuthenticated() {
     const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const request = new Request(url);
     await request.load();
-log(request.response.statusCode)
     if (request.response.statusCode === 401 || request.response.statusCode === 403) {
       return false;
     }
@@ -84,9 +83,9 @@ async function makeLogin() {
     const html = await webView.getHTML();
     if (html.includes(signInKey)) {
       await webView.present(false);
-      return false;
-    } 
-    
+      return await checkIfUserIsAuthenticated();
+    }
+
     return true;
   } catch (error) {
     console.error(error);
@@ -97,11 +96,9 @@ async function makeLogin() {
 async function synchronizeReminders() {
   try {
     const reminderCalendar = await Calendar.forRemindersByTitle(reminderListName);
-log(reminderCalendar)
     const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
     const json = await new Request(url).loadJSON()
-    log(json)
     
     // Find the list with listType === "SHOPPING_LIST" and ignore other lists
     let listItems = [];
@@ -129,7 +126,12 @@ log(reminderCalendar)
       return;
     }
     
+    const allReminders = await Reminder.all([reminderCalendar]);
     for (const item of listItems) {
+      if (!item.value) {
+        console.error(`Skipping Alexa list item with missing value: ${JSON.stringify(item)}`);
+        continue;
+      }
       const reminderTitle = item.value.split(' ').map(word => {
         if (word.toLowerCase() === withVar || word.toLowerCase() === withoutVar) {
           return word.toLowerCase();
@@ -137,7 +139,6 @@ log(reminderCalendar)
           return word.charAt(0).toUpperCase() + word.slice(1);
         }
       }).join(' ');
-      const allReminders = await Reminder.all([reminderCalendar]);
       const incompleteReminders = allReminders.filter(reminder => !reminder.isCompleted);
       const reminderExists = incompleteReminders.some(reminder => reminder.title === reminderTitle);
 
