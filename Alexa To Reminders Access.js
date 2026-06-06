@@ -142,11 +142,21 @@ async function ensureAuthenticated() {
   let json = await fetchListJSON()
   if (json) { vlog('Already authenticated'); return json }
 
-  // Not authenticated — present Amazon so the user can sign in
-  vlog('Presenting Amazon for sign-in...')
-  await sessionView.loadURL(baseURL)
-  const homeHtml = await sessionView.getHTML()
-  vlog(`Homepage loaded — sign-in indicator: ${homeHtml.includes(signInKey)}`)
+  // Show instructions so the user knows to wait for Alexa lists to load
+  const alert = new Alert()
+  alert.title = 'Amazon Sign-In Required'
+  alert.message = 'Sign in to Amazon and wait for your Alexa Shopping List to load, then tap Done.'
+  alert.addAction('Open Amazon')
+  alert.addCancelAction('Cancel')
+  const choice = await alert.presentAlert()
+  if (choice === -1) { vlog('User cancelled sign-in'); return null }
+
+  // Load the Alexa lists page — this sets Alexa-specific session cookies, not just amazon.com
+  const alexaListURL = `${baseURL}/alexa-lists`
+  vlog(`Loading Alexa lists page: ${alexaListURL}`)
+  await sessionView.loadURL(alexaListURL)
+  const pageHtml = await sessionView.getHTML()
+  vlog(`Alexa page loaded (${pageHtml.length} chars) — sign-in indicator: ${pageHtml.includes(signInKey)}`)
   await sessionView.present(false)
   vlog('WebView dismissed — retrying API')
 
