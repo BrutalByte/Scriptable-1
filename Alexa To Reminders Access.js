@@ -44,7 +44,7 @@ $$$$$$$$$$$$$$$$$$$$$$$
 const baseURL = 'https://www.amazon.com'
 
 //include the reminder list name exactly as it is in Reminders app
-const reminderListName = 'Grocery and Shopping'
+const reminderListName = 'Shopping'
 
 //signInKey should be specific for your language. English uses "Sign in". German uses "Anmelden"
 const signInKey = "Sign in"
