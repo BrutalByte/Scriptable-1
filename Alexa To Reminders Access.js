@@ -76,7 +76,9 @@ Script.complete();
 // ─── Verbose logging ─────────────────────────────────────────────────────────
 
 function vlog(msg) {
-  const ts = new Date().toISOString().replace('T', ' ').substring(0, 19)
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const ts = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
   console.log(`[${ts}] ${msg}`)
 }
 
@@ -90,12 +92,12 @@ async function checkIfUserIsAuthenticated() {
     await request.load();
     const status = request.response.statusCode
     vlog(`Auth check response status: ${status}`)
-    if (status === 401 || status === 403) {
-      vlog("Not authenticated (401/403)")
-      return false;
+    if (status >= 200 && status < 300) {
+      vlog("Authentication confirmed")
+      return true;
     }
-    vlog("Authentication confirmed")
-    return true;
+    vlog(`Not authenticated (status ${status})`)
+    return false;
   } catch (error) {
     vlog(`Auth check threw an error: ${error.message || error}`)
     console.error(error);
@@ -119,7 +121,14 @@ async function makeLogin() {
       return await checkIfUserIsAuthenticated();
     }
     vlog("Sign-in indicator not found on homepage — verifying API session directly")
-    return await checkIfUserIsAuthenticated();
+    const apiAuthenticated = await checkIfUserIsAuthenticated()
+    if (!apiAuthenticated) {
+      vlog("API session not authenticated — presenting WebView for manual sign-in")
+      await webView.present(false)
+      vlog("WebView dismissed — re-checking authentication")
+      return await checkIfUserIsAuthenticated()
+    }
+    return true;
   } catch (error) {
     vlog(`makeLogin error: ${error.message || error}`)
     console.error(error);

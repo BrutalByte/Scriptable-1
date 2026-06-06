@@ -2,7 +2,7 @@
 'use strict'
 
 const {
-  makeRequest, makeWebView, makeAlert, makeReminder, makeCalendar,
+  makeRequest, makeWebView, makeAlert, makeReminder, makeCalendar, makeFileManager,
 } = require('./scriptable-mocks')
 
 // ─── Pure logic extracted from the script ────────────────────────────────────
@@ -24,10 +24,9 @@ function makeCheckIfUserIsAuthenticated(baseURL, requestFactory) {
       const url = `${baseURL}/alexashoppinglists/api/getlistitems`
       const request = requestFactory(url)
       await request.load()
-      if (request.response.statusCode === 401 || request.response.statusCode === 403) {
-        return false
-      }
-      return true
+      const status = request.response.statusCode
+      if (status >= 200 && status < 300) return true
+      return false
     } catch (error) {
       return false
     }
@@ -42,6 +41,11 @@ function makeMakeLogin(baseURL, signInKey, checkIfUserIsAuthenticated, webViewFa
       await webView.loadURL(url)
       const html = await webView.getHTML()
       if (html.includes(signInKey)) {
+        await webView.present(false)
+        return await checkIfUserIsAuthenticated()
+      }
+      const apiAuthenticated = await checkIfUserIsAuthenticated()
+      if (!apiAuthenticated) {
         await webView.present(false)
         return await checkIfUserIsAuthenticated()
       }
@@ -177,16 +181,43 @@ module.exports = async function({ test, describe, assert }) {
       await check()
       assert.equal(capturedUrl, 'https://www.amazon.co.uk/alexashoppinglists/api/getlistitems')
     })
+
+    test('returns false when server responds with 500', async () => {
+      const req = makeRequest({ response: { statusCode: 500 } })
+      const check = makeCheckIfUserIsAuthenticated('https://amazon.com', () => req)
+      assert.equal(await check(), false)
+    })
+
+    test('returns false when server responds with 302 redirect', async () => {
+      const req = makeRequest({ response: { statusCode: 302 } })
+      const check = makeCheckIfUserIsAuthenticated('https://amazon.com', () => req)
+      assert.equal(await check(), false)
+    })
   })
 
   // ─── makeLogin ─────────────────────────────────────────────────────────────
 
   await describe('makeLogin', async () => {
-    test('returns true when page does not contain the sign-in key (already logged in)', async () => {
+    test('returns true when sign-in indicator absent and API confirms authenticated', async () => {
       const wv = makeWebView({ getHTML: async () => 'Welcome back, User!' })
       const check = async () => true
       const login = makeMakeLogin('https://amazon.com', 'Sign in', check, () => wv)
       assert.equal(await login(), true)
+    })
+
+    test('presents fallback WebView when sign-in indicator absent but API returns 401', async () => {
+      let presented = false
+      const wv = makeWebView({
+        getHTML: async () => 'Welcome back, User!',
+        present: async () => { presented = true },
+      })
+      let callCount = 0
+      const check = async () => { callCount++; return false }
+      const login = makeMakeLogin('https://amazon.com', 'Sign in', check, () => wv)
+      const result = await login()
+      assert.equal(presented, true)
+      assert.equal(result, false)
+      assert.equal(callCount, 2) // checked before and after fallback WebView
     })
 
     test('presents WebView when sign-in key is detected', async () => {
@@ -415,6 +446,85 @@ module.exports = async function({ test, describe, assert }) {
       const result = await sync()
       assert.equal(result.processed.length, 1)
       assert.equal(makeReminder.cls._saved[0].title, 'Butter')
+    })
+  })
+
+  // ─── JSON response type validation ────────────────────────────────────────
+
+  await describe('JSON response type validation', async () => {
+    function isValidListResponse(json) {
+      return typeof json === 'object' && json !== null && !Array.isArray(json)
+    }
+
+    test('accepts a plain object', () => {
+      assert.equal(isValidListResponse({ list1: {} }), true)
+    })
+
+    test('rejects a JSON string (Amazon session error message)', () => {
+      assert.equal(isValidListResponse("Not authenticated"), false)
+    })
+
+    test('rejects null', () => {
+      assert.equal(isValidListResponse(null), false)
+    })
+
+    test('rejects an array', () => {
+      assert.equal(isValidListResponse([1, 2, 3]), false)
+    })
+
+    test('rejects a number', () => {
+      assert.equal(isValidListResponse(42), false)
+    })
+  })
+
+  // ─── settings persistence ─────────────────────────────────────────────────
+
+  await describe('settings persistence', async () => {
+    test('saves selected reminderListName to settings file', () => {
+      const fm = makeFileManager()
+      const settingsPath = '/mock/documents/AlexaToReminders/settings.json'
+      const settings = {}
+      settings.reminderListName = 'Grocery'
+      fm.writeString(settingsPath, JSON.stringify(settings))
+      const loaded = JSON.parse(fm.readString(settingsPath))
+      assert.equal(loaded.reminderListName, 'Grocery')
+    })
+
+    test('loads reminderListName from settings when present', () => {
+      const fm = makeFileManager({
+        '/mock/documents/AlexaToReminders/settings.json': JSON.stringify({ reminderListName: 'My List' })
+      })
+      const settingsPath = '/mock/documents/AlexaToReminders/settings.json'
+      let reminderListName = 'Shopping'
+      if (fm.fileExists(settingsPath)) {
+        const s = JSON.parse(fm.readString(settingsPath))
+        if (s.reminderListName) reminderListName = s.reminderListName
+      }
+      assert.equal(reminderListName, 'My List')
+    })
+
+    test('falls back to default reminderListName when settings file absent', () => {
+      const fm = makeFileManager()
+      const settingsPath = '/mock/documents/AlexaToReminders/settings.json'
+      let reminderListName = 'Shopping'
+      if (fm.fileExists(settingsPath)) {
+        const s = JSON.parse(fm.readString(settingsPath))
+        if (s.reminderListName) reminderListName = s.reminderListName
+      }
+      assert.equal(reminderListName, 'Shopping')
+    })
+
+    test('preserves existing settings keys when saving reminderListName', () => {
+      const fm = makeFileManager({
+        '/mock/documents/AlexaToReminders/settings.json': JSON.stringify({ someOtherKey: true })
+      })
+      const settingsPath = '/mock/documents/AlexaToReminders/settings.json'
+      const settings = JSON.parse(fm.readString(settingsPath))
+      settings.reminderListName = 'Groceries'
+      fm.writeString(settingsPath, JSON.stringify(settings))
+      const loaded = JSON.parse(fm.readString(settingsPath))
+      assert.equal(loaded.reminderListName, 'Groceries')
+      assert.equal(loaded.someOtherKey, true)
     })
   })
 
