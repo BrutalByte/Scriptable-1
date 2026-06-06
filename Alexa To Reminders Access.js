@@ -98,8 +98,16 @@ async function synchronizeReminders() {
     const reminderCalendar = await Calendar.forRemindersByTitle(reminderListName);
     const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
-    const json = await new Request(url).loadJSON()
-    
+    const raw = await new Request(url).loadString()
+    let json
+    try {
+      json = JSON.parse(raw)
+    } catch (e) {
+      log("Response was not valid JSON — Amazon may require re-authentication")
+      log(raw.substring(0, 200))
+      return
+    }
+
     // Find the list with listType === "SHOPPING_LIST" and ignore other lists
     let listItems = [];
     let shoppingListId = null;
