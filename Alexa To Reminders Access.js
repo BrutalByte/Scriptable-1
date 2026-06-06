@@ -118,8 +118,8 @@ async function makeLogin() {
       vlog("WebView dismissed — re-checking authentication")
       return await checkIfUserIsAuthenticated();
     }
-    vlog("Already signed in (sign-in indicator not found)")
-    return true;
+    vlog("Sign-in indicator not found on homepage — verifying API session directly")
+    return await checkIfUserIsAuthenticated();
   } catch (error) {
     vlog(`makeLogin error: ${error.message || error}`)
     console.error(error);
@@ -168,12 +168,19 @@ async function synchronizeReminders() {
     let json
     try {
       json = JSON.parse(raw)
-      vlog(`Response parsed successfully — found ${Object.keys(json).length} list(s)`)
     } catch (e) {
       vlog("Response was not valid JSON — Amazon may require re-authentication")
       vlog(`Response preview: ${raw.substring(0, 200)}`)
       return
     }
+
+    if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+      vlog(`Unexpected response type: ${typeof json} — value: ${JSON.stringify(json).substring(0, 200)}`)
+      vlog("Amazon session may have expired — please run the script manually to re-authenticate")
+      return
+    }
+
+    vlog(`Response parsed successfully — found ${Object.keys(json).length} list(s)`)
 
     let listItems = [];
     let shoppingListId = null;
