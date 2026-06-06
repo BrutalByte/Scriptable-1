@@ -28,7 +28,7 @@ const signInKey  = 'Sign in'
 const withVar    = 'with'
 const withoutVar = 'without'
 
-let reminderListName = 'Shopping'
+let reminderListName = 'SHOPPING'
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
