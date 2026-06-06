@@ -70,13 +70,13 @@ if (settings.reminderListName) {
   vlog(`Using saved reminder list name: "${reminderListName}"`)
 }
 
-// Single WebView instance shared across auth and data fetching so cookies
-// are consistent — Request uses a separate cookie store on iOS and cannot
-// see cookies set by WebView.
+// Single WebView loaded on amazon.com so JS fetch() calls use its cookie jar.
+// Scriptable's Request uses a separate cookie store and cannot share
+// WebView sessions, so all Amazon API calls go through this WebView.
 const sessionView = new WebView()
 
-await main();
-Script.complete();
+await main()
+Script.complete()
 
 // ─── Verbose logging ─────────────────────────────────────────────────────────
 
@@ -87,63 +87,88 @@ function vlog(msg) {
   console.log(`[${ts}] ${msg}`)
 }
 
-// ─── WebView fetch helper ─────────────────────────────────────────────────────
+// ─── WebView API helpers ──────────────────────────────────────────────────────
 
-async function fetchAPIText() {
+// Execute fetch() inside the WebView's JS context so Amazon's session
+// cookies are automatically included. Must call loadURL(baseURL) first
+// to establish the same-origin context.
+async function wvFetch(url, options = {}) {
+  const optsJSON = JSON.stringify(options)
+  const js = `
+    fetch(${JSON.stringify(url)}, ${optsJSON})
+      .then(r => r.text())
+      .then(t => completion(t))
+      .catch(e => completion('__ERROR__:' + e.message))
+  `
+  const result = await sessionView.evaluateJavaScript(js, true)
+  if (typeof result === 'string' && result.startsWith('__ERROR__:')) {
+    throw new Error(result.replace('__ERROR__:', ''))
+  }
+  return result || ''
+}
+
+async function fetchListJSON() {
   const url = `${baseURL}/alexashoppinglists/api/getlistitems`
-  vlog(`Fetching API via WebView: ${url}`)
-  await sessionView.loadURL(url)
-  const text = await sessionView.evaluateJavaScript('document.body.innerText')
-  vlog(`API response length: ${text ? text.length : 0} chars`)
-  return text || ''
+  vlog(`Fetching shopping list: ${url}`)
+  const text = await wvFetch(url, { credentials: 'include' })
+  vlog(`Response length: ${text.length} chars`)
+  const json = JSON.parse(text)
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+    vlog(`Unexpected response type (${typeof json}): ${JSON.stringify(json).substring(0, 100)}`)
+    return null
+  }
+  return json
+}
+
+async function deleteListItem(item) {
+  const url = `${baseURL}/alexashoppinglists/api/deletelistitem`
+  await wvFetch(url, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(item),
+  })
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
-async function checkIfUserIsAuthenticated() {
-  vlog("Checking authentication status...")
-  try {
-    const text = await fetchAPIText()
-    const json = JSON.parse(text)
-    if (typeof json === 'object' && json !== null && !Array.isArray(json)) {
-      vlog("Authentication confirmed")
-      return true
-    }
-    vlog(`Unexpected response type: ${typeof json} — value: ${JSON.stringify(json).substring(0, 100)}`)
-    return false
-  } catch (error) {
-    vlog(`Auth check error: ${error.message || error}`)
-    return false;
-  }
-}
+// Load amazon.com into the WebView (establishes same-origin context for
+// wvFetch), then attempt the API call. If not authenticated, present the
+// WebView so the user can sign in, then try once more.
+async function ensureAuthenticated() {
+  vlog(`Loading Amazon homepage to establish session context: ${baseURL}`)
+  await sessionView.loadURL(baseURL)
+  const html = await sessionView.getHTML()
+  vlog(`Homepage loaded — sign-in indicator present: ${html.includes(signInKey)}`)
 
-async function makeLogin() {
-  vlog(`Loading Amazon login page: ${baseURL}`)
   try {
-    await sessionView.loadURL(baseURL)
-    const html = await sessionView.getHTML();
-    vlog(`Login page loaded — checking for sign-in indicator "${signInKey}"`)
-    if (html.includes(signInKey)) {
-      vlog("Sign-in page detected — presenting WebView to user")
-    } else {
-      vlog("Already appears logged in — presenting WebView to refresh API session")
-    }
-    await sessionView.present(false)
-    vlog("WebView dismissed — re-checking authentication")
-    return await checkIfUserIsAuthenticated();
-  } catch (error) {
-    vlog(`makeLogin error: ${error.message || error}`)
-    console.error(error);
-    return false;
+    const json = await fetchListJSON()
+    if (json) { vlog("Already authenticated"); return json }
+  } catch (e) {
+    vlog(`Initial API attempt failed: ${e.message || e}`)
   }
+
+  vlog("Not authenticated — presenting WebView for sign-in")
+  await sessionView.present(false)
+  vlog("WebView dismissed — retrying API")
+
+  try {
+    const json = await fetchListJSON()
+    if (json) { vlog("Authenticated after sign-in"); return json }
+    vlog("API still returned non-object after sign-in")
+  } catch (e) {
+    vlog(`Post-login API attempt failed: ${e.message || e}`)
+  }
+
+  return null
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
-async function synchronizeReminders() {
+async function synchronizeReminders(json) {
   vlog(`Looking up reminder list: "${reminderListName}"`)
   try {
-    let reminderCalendar = await Calendar.forRemindersByTitle(reminderListName);
+    let reminderCalendar = await Calendar.forRemindersByTitle(reminderListName)
     if (!reminderCalendar) {
       vlog(`Reminder list "${reminderListName}" not found — fetching all lists`)
       const allLists = await Calendar.forReminders()
@@ -158,10 +183,7 @@ async function synchronizeReminders() {
       for (const list of allLists) alert.addAction(list.title)
       alert.addCancelAction("Cancel")
       const idx = await alert.presentSheet()
-      if (idx === -1) {
-        vlog("User cancelled list picker")
-        return
-      }
+      if (idx === -1) { vlog("User cancelled list picker"); return }
       reminderCalendar = allLists[idx]
       vlog(`User selected: "${reminderCalendar.title}" — saving to settings`)
       settings.reminderListName = reminderCalendar.title
@@ -170,52 +192,25 @@ async function synchronizeReminders() {
       vlog(`Reminder list found: "${reminderCalendar.title}"`)
     }
 
-    const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
-    const raw = await fetchAPIText()
-
-    let json
-    try {
-      json = JSON.parse(raw)
-    } catch (e) {
-      vlog("Response was not valid JSON — Amazon may require re-authentication")
-      vlog(`Response preview: ${raw.substring(0, 200)}`)
-      return
-    }
-
-    if (typeof json !== 'object' || json === null || Array.isArray(json)) {
-      vlog(`Unexpected response type: ${typeof json} — value: ${JSON.stringify(json).substring(0, 200)}`)
-      vlog("Amazon session may have expired — please run the script manually to re-authenticate")
-      return
-    }
-
-    vlog(`Response parsed successfully — found ${Object.keys(json).length} list(s)`)
-
-    let listItems = [];
-    let shoppingListId = null;
-
+    vlog(`Scanning ${Object.keys(json).length} list(s) for SHOPPING_LIST...`)
+    let listItems = []
+    let shoppingListId = null
     for (const listId in json) {
-      const list = json[listId];
-      vlog(`Inspecting list ID "${listId}" — type: ${list.listInfo ? list.listInfo.listType : 'unknown'}`)
-      if (list.listInfo && list.listInfo.listType === "SHOPPING_LIST") {
-        listItems = list.listItems || [];
-        shoppingListId = listId;
-        vlog(`Found SHOPPING_LIST: "${list.listInfo.listName || 'Default Shopping List'}" with ${listItems.length} item(s)`)
-        break;
+      const list = json[listId]
+      vlog(`  List "${listId}" — type: ${list.listInfo ? list.listInfo.listType : 'unknown'}`)
+      if (list.listInfo && list.listInfo.listType === 'SHOPPING_LIST') {
+        listItems = list.listItems || []
+        shoppingListId = listId
+        vlog(`Found SHOPPING_LIST: "${list.listInfo.listName || 'Default'}" with ${listItems.length} item(s)`)
+        break
       }
     }
 
-    if (!shoppingListId) {
-      vlog("No SHOPPING_LIST found in the response — nothing to sync")
-      return;
-    }
-
-    if (listItems.length === 0) {
-      vlog("Shopping list is empty — nothing to sync")
-      return;
-    }
+    if (!shoppingListId) { vlog("No SHOPPING_LIST found — nothing to sync"); return }
+    if (listItems.length === 0) { vlog("Shopping list is empty — nothing to sync"); return }
 
     vlog(`Fetching existing reminders from "${reminderCalendar.title}"`)
-    const allReminders = await Reminder.all([reminderCalendar]);
+    const allReminders = await Reminder.all([reminderCalendar])
     const incompleteReminders = allReminders.filter(r => !r.isCompleted)
     vlog(`Found ${allReminders.length} reminder(s), ${incompleteReminders.length} incomplete`)
 
@@ -224,46 +219,36 @@ async function synchronizeReminders() {
     for (const item of listItems) {
       if (!item.value) {
         vlog(`Skipping item with missing value: ${JSON.stringify(item)}`)
-        console.error(`Skipping Alexa list item with missing value: ${JSON.stringify(item)}`);
-        continue;
+        continue
       }
 
       const reminderTitle = item.value.split(' ').map(word => {
         if (word.toLowerCase() === withVar || word.toLowerCase() === withoutVar) {
-          return word.toLowerCase();
-        } else {
-          return word.charAt(0).toUpperCase() + word.slice(1);
+          return word.toLowerCase()
         }
-      }).join(' ');
+        return word.charAt(0).toUpperCase() + word.slice(1)
+      }).join(' ')
 
-      const reminderExists = incompleteReminders.some(r => r.title === reminderTitle);
-
+      const reminderExists = incompleteReminders.some(r => r.title === reminderTitle)
       if (!reminderExists) {
         vlog(`Creating reminder: "${reminderTitle}"`)
-        const reminder = new Reminder();
-        reminder.title = reminderTitle;
-        reminder.calendar = reminderCalendar;
-        await reminder.save();
+        const reminder = new Reminder()
+        reminder.title = reminderTitle
+        reminder.calendar = reminderCalendar
+        await reminder.save()
         created++
       } else {
         vlog(`Reminder already exists, skipping: "${reminderTitle}"`)
         skipped++
       }
 
-      vlog(`Deleting item from Alexa list: "${item.value}"`)
-      const request = new Request(deleteUrl);
-      request.method = "DELETE";
-      request.headers = { "Content-Type": "application/json" };
-      request.body = JSON.stringify(item);
-
+      vlog(`Deleting item from Alexa: "${item.value}"`)
       try {
-        await request.loadString();
+        await deleteListItem(item)
         vlog(`Deleted from Alexa: "${item.value}"`)
         deleted++
       } catch (deleteError) {
-        vlog(`Failed to delete "${item.value}" from Alexa: ${deleteError.message || deleteError}`)
-        console.error(`Failed to delete item: ${item.value}`);
-        console.error(deleteError);
+        vlog(`Failed to delete "${item.value}": ${deleteError.message || deleteError}`)
         deleteFailed++
       }
     }
@@ -271,7 +256,7 @@ async function synchronizeReminders() {
     vlog(`Sync complete — created: ${created}, skipped: ${skipped}, alexa deleted: ${deleted}, delete failures: ${deleteFailed}`)
   } catch (error) {
     vlog(`Error during synchronization: ${error.message || error}`)
-    console.error(error);
+    console.error(error)
   }
 }
 
@@ -279,19 +264,11 @@ async function synchronizeReminders() {
 
 async function main() {
   vlog("=== Alexa To Reminders: starting ===")
-  const isAuthenticated = await checkIfUserIsAuthenticated();
-  vlog(`authenticated? ${isAuthenticated}`);
-
-  if (!isAuthenticated) {
-    vlog("Initiating login flow")
-    const loggedIn = await makeLogin();
-    vlog(`loggedIn? ${loggedIn}`);
-    if (!loggedIn) {
-      vlog("Login failed — exiting")
-      return;
-    }
+  const json = await ensureAuthenticated()
+  if (!json) {
+    vlog("Could not authenticate — exiting")
+    return
   }
-
-  await synchronizeReminders();
+  await synchronizeReminders(json)
   vlog("=== Alexa To Reminders: done ===")
 }
