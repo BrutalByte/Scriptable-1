@@ -123,8 +123,10 @@ async function makeLogin() {
     vlog("Sign-in indicator not found on homepage — verifying API session directly")
     const apiAuthenticated = await checkIfUserIsAuthenticated()
     if (!apiAuthenticated) {
-      vlog("API session not authenticated — presenting WebView for manual sign-in")
-      await webView.present(false)
+      vlog("API session not authenticated — loading API URL in WebView to refresh session cookies")
+      const apiView = new WebView()
+      await apiView.loadURL(`${baseURL}/alexashoppinglists/api/getlistitems`)
+      await apiView.present(false)
       vlog("WebView dismissed — re-checking authentication")
       return await checkIfUserIsAuthenticated()
     }
