@@ -90,30 +90,30 @@ function vlog(msg) {
 // ─── WebView API helpers ──────────────────────────────────────────────────────
 
 // Execute an XHR inside the WebView's JS context so Amazon's session
-// cookies are automatically included. Uses XMLHttpRequest (not fetch)
-// because Scriptable's evaluateJavaScript completion callback does not
-// handle Promises — XHR's onload fires cleanly with the callback pattern.
+// cookies are automatically included. Returns a Promise from JS so
+// Scriptable resolves it natively — the completion callback pattern
+// causes "unsupported type" errors with async XHR/fetch results.
 async function wvFetch(url, options = {}) {
   const method = options.method || 'GET'
   const body = (options.body != null) ? options.body : null
   const headers = options.headers || {}
 
   const js = `
-    (function() {
+    new Promise(function(resolve) {
       var xhr = new XMLHttpRequest();
       xhr.open(${JSON.stringify(method)}, ${JSON.stringify(url)}, true);
       xhr.withCredentials = true;
       xhr.timeout = 30000;
       var h = ${JSON.stringify(headers)};
       Object.keys(h).forEach(function(k) { xhr.setRequestHeader(k, h[k]); });
-      xhr.onload = function() { completion(xhr.responseText); };
-      xhr.onerror = function() { completion('__ERROR__:network error'); };
-      xhr.ontimeout = function() { completion('__ERROR__:timeout'); };
+      xhr.onload = function() { resolve(xhr.responseText); };
+      xhr.onerror = function() { resolve('__ERROR__:network error'); };
+      xhr.ontimeout = function() { resolve('__ERROR__:timeout'); };
       xhr.send(${body !== null ? JSON.stringify(body) : 'null'});
-    })();
+    })
   `
 
-  const result = await sessionView.evaluateJavaScript(js, true)
+  const result = await sessionView.evaluateJavaScript(js)
   if (typeof result === 'string' && result.startsWith('__ERROR__:')) {
     throw new Error(result.replace('__ERROR__:', ''))
   }
