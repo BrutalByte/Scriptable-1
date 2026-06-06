@@ -96,6 +96,10 @@ async function makeLogin() {
 async function synchronizeReminders() {
   try {
     const reminderCalendar = await Calendar.forRemindersByTitle(reminderListName);
+    if (!reminderCalendar) {
+      log(`Reminders list "${reminderListName}" not found — check the reminderListName setting`)
+      return
+    }
     const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
     const raw = await new Request(url).loadString()
@@ -176,7 +180,7 @@ async function synchronizeReminders() {
     
     log(`Sync completed: processed ${listItems.length} items`);
   } catch (error) {
-    log("Error during synchronization")
+    log(`Error during synchronization: ${error.message || error}`)
     console.error(error);
   }
 }
