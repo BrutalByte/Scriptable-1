@@ -43,8 +43,8 @@ $$$$$$$$$$$$$$$$$$$$$$$
 //set baseURL based on your home country url
 const baseURL = 'https://www.amazon.com'
 
-//include the reminder list name exactly as it is in Reminders app
-const reminderListName = 'Shopping'
+//include the reminder list name exactly as it is in Reminders app — overridden by saved settings
+let reminderListName = 'Shopping'
 
 //signInKey should be specific for your language. English uses "Sign in". German uses "Anmelden"
 const signInKey = "Sign in"
@@ -54,6 +54,17 @@ const withVar = "with"
 
 //withoutVar below needs to be set to your language's version of the word 'without'
 const withoutVar = "without"
+
+const fm = FileManager.iCloud()
+const settingsDir = fm.documentsDirectory() + '/AlexaToReminders/'
+const settingsPath = settingsDir + 'settings.json'
+if (!fm.fileExists(settingsDir)) fm.createDirectory(settingsDir, false)
+
+let settings = {}
+if (fm.fileExists(settingsPath)) {
+  settings = JSON.parse(fm.readString(settingsPath))
+}
+if (settings.reminderListName) reminderListName = settings.reminderListName
 
 await main();
 Script.complete();
@@ -112,6 +123,8 @@ async function synchronizeReminders() {
       if (idx === -1) return
       reminderCalendar = allLists[idx]
       log(`User selected: ${reminderCalendar.title}`)
+      settings.reminderListName = reminderCalendar.title
+      fm.writeString(settingsPath, JSON.stringify(settings))
     }
     const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
