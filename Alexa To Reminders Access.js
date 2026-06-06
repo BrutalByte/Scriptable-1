@@ -95,10 +95,23 @@ async function makeLogin() {
 
 async function synchronizeReminders() {
   try {
-    const reminderCalendar = await Calendar.forRemindersByTitle(reminderListName);
+    let reminderCalendar = await Calendar.forRemindersByTitle(reminderListName);
     if (!reminderCalendar) {
-      log(`Reminders list "${reminderListName}" not found — check the reminderListName setting`)
-      return
+      log(`Reminders list "${reminderListName}" not found — prompting user to pick one`)
+      const allLists = await Calendar.forReminders()
+      if (!allLists || allLists.length === 0) {
+        log("No reminder lists found on this device")
+        return
+      }
+      const alert = new Alert()
+      alert.title = "Reminders List Not Found"
+      alert.message = `"${reminderListName}" doesn't exist. Pick a list to use:`
+      for (const list of allLists) alert.addAction(list.title)
+      alert.addCancelAction("Cancel")
+      const idx = await alert.presentSheet()
+      if (idx === -1) return
+      reminderCalendar = allLists[idx]
+      log(`User selected: ${reminderCalendar.title}`)
     }
     const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
