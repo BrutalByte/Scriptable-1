@@ -63,22 +63,50 @@ function vlog(msg) {
   console.log(`[${ts}] ${msg}`)
 }
 
-// ─── HTML content extraction ──────────────────────────────────────────────────
+// ─── Amazon API ───────────────────────────────────────────────────────────────
 
-// WKWebView wraps JSON responses in a minimal HTML page.
-// Pull the text content out and attempt to parse it as JSON.
-function extractJSONFromHTML(html) {
-  // Try <pre> wrapper first (common for JSON responses)
-  const preMatch = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)
-  let text = preMatch
-    ? preMatch[1]
-    : html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+async function fetchListJSON() {
+  const apiUrl = `${baseURL}/alexashoppinglists/api/getlistitems`
+  vlog(`Fetching list via XHR: ${apiUrl}`)
 
-  text = text.trim()
-  vlog(`Extracted text (${text.length} chars): ${text.substring(0, 80)}`)
+  const helperPage = `<!DOCTYPE html><html><body>
+<div id="r" style="display:none"></div>
+<script>
+var out = 'error';
+try {
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', ${JSON.stringify(apiUrl)}, false);
+  xhr.withCredentials = true;
+  xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
+  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+  xhr.send(null);
+  out = xhr.status + '|' + xhr.responseText;
+} catch(e) { out = 'err:' + e.message; }
+document.getElementById('r').textContent = out;
+</script></body></html>`
+
+  await sessionView.loadHTML(helperPage, baseURL)
+  const resultHtml = await sessionView.getHTML()
+  const match = resultHtml.match(/<div id="r"[^>]*>([\s\S]*?)<\/div>/i)
+  const raw = match ? match[1].trim() : ''
+  vlog(`XHR raw result (${raw.length} chars): ${raw.substring(0, 120)}`)
+
+  if (!raw || raw === 'error' || raw.startsWith('err:')) {
+    vlog(`XHR failed: ${raw}`)
+    return null
+  }
+
+  const pipeIdx = raw.indexOf('|')
+  if (pipeIdx === -1) { vlog('Unexpected result format'); return null }
+
+  const status = parseInt(raw.substring(0, pipeIdx), 10)
+  const body = raw.substring(pipeIdx + 1)
+  vlog(`XHR status: ${status}, body (${body.length} chars): ${body.substring(0, 80)}`)
+
+  if (status < 200 || status >= 300) { vlog(`Non-2xx status: ${status}`); return null }
 
   try {
-    const json = JSON.parse(text)
+    const json = JSON.parse(body)
     if (typeof json === 'object' && json !== null && !Array.isArray(json)) {
       vlog(`Valid JSON object with ${Object.keys(json).length} key(s)`)
       return json
@@ -89,17 +117,6 @@ function extractJSONFromHTML(html) {
     vlog(`JSON parse failed: ${e.message}`)
     return null
   }
-}
-
-// ─── Amazon API ───────────────────────────────────────────────────────────────
-
-async function fetchListJSON() {
-  const url = `${baseURL}/alexashoppinglists/api/getlistitems`
-  vlog(`Navigating to: ${url}`)
-  await sessionView.loadURL(url)
-  const html = await sessionView.getHTML()
-  vlog(`Response HTML length: ${html.length} chars`)
-  return extractJSONFromHTML(html)
 }
 
 // Send a DELETE via a loadHTML helper page so the request runs inside
@@ -151,12 +168,12 @@ async function ensureAuthenticated() {
   const choice = await alert.presentAlert()
   if (choice === -1) { vlog('User cancelled sign-in'); return null }
 
-  // Load the Alexa lists page — this sets Alexa-specific session cookies, not just amazon.com
-  const alexaListURL = `${baseURL}/alexa-lists`
-  vlog(`Loading Alexa lists page: ${alexaListURL}`)
-  await sessionView.loadURL(alexaListURL)
+  // Load the full Alexa web app — this establishes Alexa-specific session state
+  const alexaAppURL = 'https://alexa.amazon.com'
+  vlog(`Loading Alexa web app: ${alexaAppURL}`)
+  await sessionView.loadURL(alexaAppURL)
   const pageHtml = await sessionView.getHTML()
-  vlog(`Alexa page loaded (${pageHtml.length} chars) — sign-in indicator: ${pageHtml.includes(signInKey)}`)
+  vlog(`Alexa app loaded (${pageHtml.length} chars) — sign-in indicator: ${pageHtml.includes(signInKey)}`)
   await sessionView.present(false)
   vlog('WebView dismissed — retrying API')
 
