@@ -2,60 +2,40 @@
 // These must be at the very top of the file. Do not edit.
 // icon-color: purple; icon-glyph: magic;
 /*
-$$$$$$$$$$$$$$$$$$$$$$$
-$$$$$$$$$$
-
 Alexa To Reminders Access
+Script made by: mvan231 — Date: 2023/10/26
 
-Script made by: mvan231
-Date made: 2023/10/26
-
-Purpose: To sync alexa reminders to a iOS reminders list. previously IFTTT could do this, but Amazon revoked the Alexa IFTTT integration recently.
+Syncs your Alexa shopping list to an iOS Reminders list.
+Amazon revoked the IFTTT integration, so this script fills that gap.
 
 Setup:
-  - Insert the Amazon base url your country uses (if different from default) in the "baseURL" variable below
-  - Insert the name of the desired reminders list in the "reminderListName" line. I use "Grocery and Shopping" with my wife, so i have that name entered.
-  - Insert the wording for "Sign In" for the signInKeyvariable below. sometimes this varies based on region
-  - For proper naming preference, please use the withVar and withoutVar for your local language to properly set naming of the reminders to be created
+  1. Set baseURL to your country's Amazon domain if not amazon.com
+  2. Set reminderListName to match your Reminders list exactly
+     (will prompt to pick one if it doesn't match)
+  3. Run once — a login WebView will appear if needed.
+     After signing in, tap Done. The script reads your
+     session cookies from the WebView and uses them for
+     all future API calls via Scriptable's Request object.
 
-
-When running the first time, the script will check if you are logged in. If not, it will notify and present with login page. After that, the script should run seamlessly.
-
-$$$$$$$$$$
-$$$$$$$$$$$$$$$$$$$$$$$
-
-$$$$$$$$$$$$$$$$$$$$$$$
-$$$$$$$$$$
-
-Version Info:
-v6 had to make update to accomodate slight change on Amazon's end
-v5 used code from user andereeicheln0z frok github repo issue linked below to inprove performance
-https://github.com/mvan231/Scriptable/issues/25
-
-v6 updated if statement from withVariable to withVar so it works properly
-
-v7 updated to specifically target SHOPPING_LIST type and ignore other lists
-
-$$$$$$$$$$
-$$$$$$$$$$$$$$$$$$$$$$$
+Version history:
+  v8 — Rewrote auth: extracts session cookies from WebView after login
+        and injects them into Request headers. Eliminates all cookie
+        store mismatch issues between WebView and Request.
 */
 
-//set baseURL based on your home country url
-const baseURL = 'https://www.amazon.com'
+// ─── Configuration ────────────────────────────────────────────────────────────
 
-//include the reminder list name exactly as it is in Reminders app — overridden by saved settings
+const baseURL       = 'https://www.amazon.com'
+const signInKey     = 'Sign in'
+const withVar       = 'with'
+const withoutVar    = 'without'
+
+// Overridden by saved settings if present
 let reminderListName = 'Shopping'
 
-//signInKey should be specific for your language. English uses "Sign in". German uses "Anmelden"
-const signInKey = "Sign in"
+// ─── Settings ─────────────────────────────────────────────────────────────────
 
-//withVar below needs to be set to your language's version of the word 'with'
-const withVar = "with"
-
-//withoutVar below needs to be set to your language's version of the word 'without'
-const withoutVar = "without"
-
-const fm = FileManager.iCloud()
+const fm          = FileManager.iCloud()
 const settingsDir = fm.documentsDirectory() + '/AlexaToReminders/'
 const settingsPath = settingsDir + 'settings.json'
 if (!fm.fileExists(settingsDir)) fm.createDirectory(settingsDir, false)
@@ -70,15 +50,10 @@ if (settings.reminderListName) {
   vlog(`Using saved reminder list name: "${reminderListName}"`)
 }
 
-// Single WebView loaded on amazon.com so JS fetch() calls use its cookie jar.
-// Scriptable's Request uses a separate cookie store and cannot share
-// WebView sessions, so all Amazon API calls go through this WebView.
-const sessionView = new WebView()
-
 await main()
 Script.complete()
 
-// ─── Verbose logging ─────────────────────────────────────────────────────────
+// ─── Logging ──────────────────────────────────────────────────────────────────
 
 function vlog(msg) {
   const now = new Date()
@@ -87,45 +62,60 @@ function vlog(msg) {
   console.log(`[${ts}] ${msg}`)
 }
 
-// ─── WebView API helpers ──────────────────────────────────────────────────────
+// ─── Cookie extraction ────────────────────────────────────────────────────────
 
-// Execute an XHR inside the WebView's JS context so Amazon's session
-// cookies are automatically included. Returns a Promise from JS so
-// Scriptable resolves it natively — the completion callback pattern
-// causes "unsupported type" errors with async XHR/fetch results.
-async function wvFetch(url, options = {}) {
-  const method = options.method || 'GET'
-  const body = (options.body != null) ? options.body : null
-  const headers = options.headers || {}
-
+// After a WebView login, extract the amazon.com session cookies via JS
+// and return them as a Cookie header string for use in Request objects.
+async function extractCookiesFromWebView(webView) {
+  vlog('Extracting session cookies from WebView...')
   const js = `
-    new Promise(function(resolve) {
-      var xhr = new XMLHttpRequest();
-      xhr.open(${JSON.stringify(method)}, ${JSON.stringify(url)}, true);
-      xhr.withCredentials = true;
-      xhr.timeout = 30000;
-      var h = ${JSON.stringify(headers)};
-      Object.keys(h).forEach(function(k) { xhr.setRequestHeader(k, h[k]); });
-      xhr.onload = function() { resolve(xhr.responseText); };
-      xhr.onerror = function() { resolve('__ERROR__:network error'); };
-      xhr.ontimeout = function() { resolve('__ERROR__:timeout'); };
-      xhr.send(${body !== null ? JSON.stringify(body) : 'null'});
-    })
+    (function() {
+      return document.cookie
+    })()
   `
-
-  const result = await sessionView.evaluateJavaScript(js)
-  if (typeof result === 'string' && result.startsWith('__ERROR__:')) {
-    throw new Error(result.replace('__ERROR__:', ''))
+  try {
+    const cookieStr = await webView.evaluateJavaScript(js)
+    vlog(`Extracted ${cookieStr ? cookieStr.split(';').length : 0} cookie(s)`)
+    return cookieStr || ''
+  } catch (e) {
+    vlog(`Cookie extraction failed: ${e.message || e}`)
+    return ''
   }
-  return result || ''
 }
 
-async function fetchListJSON() {
-  const url = `${baseURL}/alexashoppinglists/api/getlistitems`
-  vlog(`Fetching shopping list: ${url}`)
-  const text = await wvFetch(url, { credentials: 'include' })
-  vlog(`Response length: ${text.length} chars`)
-  const json = JSON.parse(text)
+// ─── Amazon API ───────────────────────────────────────────────────────────────
+
+async function apiGet(path, cookieHeader) {
+  const url = `${baseURL}${path}`
+  vlog(`GET ${url}`)
+  const req = new Request(url)
+  if (cookieHeader) req.headers = { Cookie: cookieHeader }
+  const text = await req.loadString()
+  vlog(`Response: ${text.length} chars — preview: ${text.substring(0, 80)}`)
+  return text
+}
+
+async function apiDelete(path, body, cookieHeader) {
+  const url = `${baseURL}${path}`
+  vlog(`DELETE ${url}`)
+  const req = new Request(url)
+  req.method = 'DELETE'
+  req.headers = {
+    'Content-Type': 'application/json',
+    ...(cookieHeader ? { Cookie: cookieHeader } : {})
+  }
+  req.body = JSON.stringify(body)
+  return req.loadString()
+}
+
+function parseListResponse(text) {
+  let json
+  try {
+    json = JSON.parse(text)
+  } catch (e) {
+    vlog(`Response is not valid JSON: ${e.message}`)
+    return null
+  }
   if (typeof json !== 'object' || json === null || Array.isArray(json)) {
     vlog(`Unexpected response type (${typeof json}): ${JSON.stringify(json).substring(0, 100)}`)
     return null
@@ -133,72 +123,79 @@ async function fetchListJSON() {
   return json
 }
 
-async function deleteListItem(item) {
-  const url = `${baseURL}/alexashoppinglists/api/deletelistitem`
-  await wvFetch(url, {
-    method: 'DELETE',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(item),
-  })
-}
-
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
-// Load amazon.com into the WebView (establishes same-origin context for
-// wvFetch), then attempt the API call. If not authenticated, present the
-// WebView so the user can sign in, then try once more.
+// Try the API with the given cookie header. Returns parsed JSON or null.
+async function tryFetch(cookieHeader) {
+  try {
+    const text = await apiGet('/alexashoppinglists/api/getlistitems', cookieHeader)
+    return parseListResponse(text)
+  } catch (e) {
+    vlog(`API request failed: ${e.message || e}`)
+    return null
+  }
+}
+
+// Show Amazon in a WebView, wait for the user to sign in, then extract
+// cookies and return them as a header string.
+async function loginAndGetCookies() {
+  vlog('Presenting Amazon WebView for sign-in...')
+  const wv = new WebView()
+  await wv.loadURL(baseURL)
+  await wv.present(false)
+  vlog('WebView dismissed — extracting cookies')
+  return extractCookiesFromWebView(wv)
+}
+
 async function ensureAuthenticated() {
-  vlog(`Loading Amazon homepage to establish session context: ${baseURL}`)
-  await sessionView.loadURL(baseURL)
-  const html = await sessionView.getHTML()
-  vlog(`Homepage loaded — sign-in indicator present: ${html.includes(signInKey)}`)
+  // Try with no extra cookies first (may already be authenticated via system)
+  vlog('Attempting API without extra cookies...')
+  let json = await tryFetch(null)
+  if (json) { vlog('Authenticated via system session'); return { json, cookieHeader: null } }
 
-  try {
-    const json = await fetchListJSON()
-    if (json) { vlog("Already authenticated"); return json }
-  } catch (e) {
-    vlog(`Initial API attempt failed: ${e.message || e}`)
+  // Try with saved cookies from a previous login
+  if (settings.cookieHeader) {
+    vlog('Trying saved session cookies...')
+    json = await tryFetch(settings.cookieHeader)
+    if (json) { vlog('Authenticated via saved cookies'); return { json, cookieHeader: settings.cookieHeader } }
+    vlog('Saved cookies expired')
   }
 
-  vlog("Not authenticated — presenting WebView for sign-in")
-  await sessionView.present(false)
-  vlog("WebView dismissed — retrying API")
-
-  try {
-    const json = await fetchListJSON()
-    if (json) { vlog("Authenticated after sign-in"); return json }
-    vlog("API still returned non-object after sign-in")
-  } catch (e) {
-    vlog(`Post-login API attempt failed: ${e.message || e}`)
+  // Need fresh login
+  const cookieHeader = await loginAndGetCookies()
+  if (cookieHeader) {
+    settings.cookieHeader = cookieHeader
+    fm.writeString(settingsPath, JSON.stringify(settings))
+    vlog('Saved fresh cookies to settings')
   }
 
+  json = await tryFetch(cookieHeader || null)
+  if (json) { vlog('Authenticated after login'); return { json, cookieHeader } }
+
+  vlog('Authentication failed — could not get valid API response')
   return null
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
-async function synchronizeReminders(json) {
+async function synchronizeReminders(json, cookieHeader) {
   vlog(`Looking up reminder list: "${reminderListName}"`)
   try {
     let reminderCalendar = await Calendar.forRemindersByTitle(reminderListName)
     if (!reminderCalendar) {
       vlog(`Reminder list "${reminderListName}" not found — fetching all lists`)
       const allLists = await Calendar.forReminders()
-      if (!allLists || allLists.length === 0) {
-        vlog("No reminder lists found on this device")
-        return
-      }
+      if (!allLists || allLists.length === 0) { vlog('No reminder lists on device'); return }
       vlog(`Available lists: ${allLists.map(l => l.title).join(', ')}`)
       const alert = new Alert()
-      alert.title = "Reminders List Not Found"
-      alert.message = `"${reminderListName}" doesn't exist. Pick a list to use:`
+      alert.title = 'Reminders List Not Found'
+      alert.message = `"${reminderListName}" doesn't exist. Pick a list:`
       for (const list of allLists) alert.addAction(list.title)
-      alert.addCancelAction("Cancel")
+      alert.addCancelAction('Cancel')
       const idx = await alert.presentSheet()
-      if (idx === -1) { vlog("User cancelled list picker"); return }
+      if (idx === -1) { vlog('User cancelled'); return }
       reminderCalendar = allLists[idx]
-      vlog(`User selected: "${reminderCalendar.title}" — saving to settings`)
+      vlog(`User selected: "${reminderCalendar.title}" — saving`)
       settings.reminderListName = reminderCalendar.title
       fm.writeString(settingsPath, JSON.stringify(settings))
     } else {
@@ -206,8 +203,7 @@ async function synchronizeReminders(json) {
     }
 
     vlog(`Scanning ${Object.keys(json).length} list(s) for SHOPPING_LIST...`)
-    let listItems = []
-    let shoppingListId = null
+    let listItems = [], shoppingListId = null
     for (const listId in json) {
       const list = json[listId]
       vlog(`  List "${listId}" — type: ${list.listInfo ? list.listInfo.listType : 'unknown'}`)
@@ -219,56 +215,50 @@ async function synchronizeReminders(json) {
       }
     }
 
-    if (!shoppingListId) { vlog("No SHOPPING_LIST found — nothing to sync"); return }
-    if (listItems.length === 0) { vlog("Shopping list is empty — nothing to sync"); return }
+    if (!shoppingListId) { vlog('No SHOPPING_LIST found — nothing to sync'); return }
+    if (listItems.length === 0) { vlog('Shopping list is empty — nothing to sync'); return }
 
     vlog(`Fetching existing reminders from "${reminderCalendar.title}"`)
     const allReminders = await Reminder.all([reminderCalendar])
     const incompleteReminders = allReminders.filter(r => !r.isCompleted)
-    vlog(`Found ${allReminders.length} reminder(s), ${incompleteReminders.length} incomplete`)
+    vlog(`${allReminders.length} total, ${incompleteReminders.length} incomplete`)
 
     let created = 0, skipped = 0, deleted = 0, deleteFailed = 0
 
     for (const item of listItems) {
-      if (!item.value) {
-        vlog(`Skipping item with missing value: ${JSON.stringify(item)}`)
-        continue
-      }
+      if (!item.value) { vlog(`Skipping item with no value: ${JSON.stringify(item)}`); continue }
 
       const reminderTitle = item.value.split(' ').map(word => {
-        if (word.toLowerCase() === withVar || word.toLowerCase() === withoutVar) {
-          return word.toLowerCase()
-        }
+        if (word.toLowerCase() === withVar || word.toLowerCase() === withoutVar) return word.toLowerCase()
         return word.charAt(0).toUpperCase() + word.slice(1)
       }).join(' ')
 
-      const reminderExists = incompleteReminders.some(r => r.title === reminderTitle)
-      if (!reminderExists) {
+      if (incompleteReminders.some(r => r.title === reminderTitle)) {
+        vlog(`Already exists, skipping: "${reminderTitle}"`)
+        skipped++
+      } else {
         vlog(`Creating reminder: "${reminderTitle}"`)
         const reminder = new Reminder()
         reminder.title = reminderTitle
         reminder.calendar = reminderCalendar
         await reminder.save()
         created++
-      } else {
-        vlog(`Reminder already exists, skipping: "${reminderTitle}"`)
-        skipped++
       }
 
-      vlog(`Deleting item from Alexa: "${item.value}"`)
+      vlog(`Deleting from Alexa: "${item.value}"`)
       try {
-        await deleteListItem(item)
-        vlog(`Deleted from Alexa: "${item.value}"`)
+        await apiDelete('/alexashoppinglists/api/deletelistitem', item, cookieHeader)
+        vlog(`Deleted: "${item.value}"`)
         deleted++
-      } catch (deleteError) {
-        vlog(`Failed to delete "${item.value}": ${deleteError.message || deleteError}`)
+      } catch (e) {
+        vlog(`Delete failed for "${item.value}": ${e.message || e}`)
         deleteFailed++
       }
     }
 
-    vlog(`Sync complete — created: ${created}, skipped: ${skipped}, alexa deleted: ${deleted}, delete failures: ${deleteFailed}`)
+    vlog(`Done — created: ${created}, skipped: ${skipped}, deleted: ${deleted}, delete failures: ${deleteFailed}`)
   } catch (error) {
-    vlog(`Error during synchronization: ${error.message || error}`)
+    vlog(`Sync error: ${error.message || error}`)
     console.error(error)
   }
 }
@@ -276,12 +266,12 @@ async function synchronizeReminders(json) {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 async function main() {
-  vlog("=== Alexa To Reminders: starting ===")
-  const json = await ensureAuthenticated()
-  if (!json) {
-    vlog("Could not authenticate — exiting")
+  vlog('=== Alexa To Reminders: starting ===')
+  const auth = await ensureAuthenticated()
+  if (!auth) {
+    vlog('Could not authenticate — exiting')
     return
   }
-  await synchronizeReminders(json)
-  vlog("=== Alexa To Reminders: done ===")
+  await synchronizeReminders(auth.json, auth.cookieHeader)
+  vlog('=== Alexa To Reminders: done ===')
 }
