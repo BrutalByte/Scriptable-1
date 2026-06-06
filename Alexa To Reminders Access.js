@@ -89,17 +89,30 @@ function vlog(msg) {
 
 // ─── WebView API helpers ──────────────────────────────────────────────────────
 
-// Execute fetch() inside the WebView's JS context so Amazon's session
-// cookies are automatically included. Must call loadURL(baseURL) first
-// to establish the same-origin context.
+// Execute an XHR inside the WebView's JS context so Amazon's session
+// cookies are automatically included. Uses XMLHttpRequest (not fetch)
+// because Scriptable's evaluateJavaScript completion callback does not
+// handle Promises — XHR's onload fires cleanly with the callback pattern.
 async function wvFetch(url, options = {}) {
-  const optsJSON = JSON.stringify(options)
+  const method = options.method || 'GET'
+  const body = (options.body != null) ? options.body : null
+  const headers = options.headers || {}
+
   const js = `
-    fetch(${JSON.stringify(url)}, ${optsJSON})
-      .then(r => r.text())
-      .then(t => completion(t))
-      .catch(e => completion('__ERROR__:' + e.message))
+    (function() {
+      var xhr = new XMLHttpRequest();
+      xhr.open(${JSON.stringify(method)}, ${JSON.stringify(url)}, true);
+      xhr.withCredentials = true;
+      xhr.timeout = 30000;
+      var h = ${JSON.stringify(headers)};
+      Object.keys(h).forEach(function(k) { xhr.setRequestHeader(k, h[k]); });
+      xhr.onload = function() { completion(xhr.responseText); };
+      xhr.onerror = function() { completion('__ERROR__:network error'); };
+      xhr.ontimeout = function() { completion('__ERROR__:timeout'); };
+      xhr.send(${body !== null ? JSON.stringify(body) : 'null'});
+    })();
   `
+
   const result = await sessionView.evaluateJavaScript(js, true)
   if (typeof result === 'string' && result.startsWith('__ERROR__:')) {
     throw new Error(result.replace('__ERROR__:', ''))
