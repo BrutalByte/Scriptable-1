@@ -70,6 +70,11 @@ if (settings.reminderListName) {
   vlog(`Using saved reminder list name: "${reminderListName}"`)
 }
 
+// Single WebView instance shared across auth and data fetching so cookies
+// are consistent — Request uses a separate cookie store on iOS and cannot
+// see cookies set by WebView.
+const sessionView = new WebView()
+
 await main();
 Script.complete();
 
@@ -82,55 +87,50 @@ function vlog(msg) {
   console.log(`[${ts}] ${msg}`)
 }
 
+// ─── WebView fetch helper ─────────────────────────────────────────────────────
+
+async function fetchAPIText() {
+  const url = `${baseURL}/alexashoppinglists/api/getlistitems`
+  vlog(`Fetching API via WebView: ${url}`)
+  await sessionView.loadURL(url)
+  const text = await sessionView.evaluateJavaScript('document.body.innerText')
+  vlog(`API response length: ${text ? text.length : 0} chars`)
+  return text || ''
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 async function checkIfUserIsAuthenticated() {
   vlog("Checking authentication status...")
   try {
-    const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
-    const request = new Request(url);
-    await request.load();
-    const status = request.response.statusCode
-    vlog(`Auth check response status: ${status}`)
-    if (status >= 200 && status < 300) {
+    const text = await fetchAPIText()
+    const json = JSON.parse(text)
+    if (typeof json === 'object' && json !== null && !Array.isArray(json)) {
       vlog("Authentication confirmed")
-      return true;
+      return true
     }
-    vlog(`Not authenticated (status ${status})`)
-    return false;
+    vlog(`Unexpected response type: ${typeof json} — value: ${JSON.stringify(json).substring(0, 100)}`)
+    return false
   } catch (error) {
-    vlog(`Auth check threw an error: ${error.message || error}`)
-    console.error(error);
+    vlog(`Auth check error: ${error.message || error}`)
     return false;
   }
 }
 
 async function makeLogin() {
   vlog(`Loading Amazon login page: ${baseURL}`)
-  const url = `${baseURL}`;
-  const webView = new WebView();
-
   try {
-    await webView.loadURL(url)
-    const html = await webView.getHTML();
+    await sessionView.loadURL(baseURL)
+    const html = await sessionView.getHTML();
     vlog(`Login page loaded — checking for sign-in indicator "${signInKey}"`)
     if (html.includes(signInKey)) {
       vlog("Sign-in page detected — presenting WebView to user")
-      await webView.present(false);
-      vlog("WebView dismissed — re-checking authentication")
-      return await checkIfUserIsAuthenticated();
+    } else {
+      vlog("Already appears logged in — presenting WebView to refresh API session")
     }
-    vlog("Sign-in indicator not found on homepage — verifying API session directly")
-    const apiAuthenticated = await checkIfUserIsAuthenticated()
-    if (!apiAuthenticated) {
-      vlog("API session not authenticated — loading API URL in WebView to refresh session cookies")
-      const apiView = new WebView()
-      await apiView.loadURL(`${baseURL}/alexashoppinglists/api/getlistitems`)
-      await apiView.present(false)
-      vlog("WebView dismissed — re-checking authentication")
-      return await checkIfUserIsAuthenticated()
-    }
-    return true;
+    await sessionView.present(false)
+    vlog("WebView dismissed — re-checking authentication")
+    return await checkIfUserIsAuthenticated();
   } catch (error) {
     vlog(`makeLogin error: ${error.message || error}`)
     console.error(error);
@@ -170,11 +170,8 @@ async function synchronizeReminders() {
       vlog(`Reminder list found: "${reminderCalendar.title}"`)
     }
 
-    const url = `${baseURL}/alexashoppinglists/api/getlistitems`;
     const deleteUrl = `${baseURL}/alexashoppinglists/api/deletelistitem`;
-    vlog(`Fetching Alexa shopping list from: ${url}`)
-    const raw = await new Request(url).loadString()
-    vlog(`Response length: ${raw.length} chars`)
+    const raw = await fetchAPIText()
 
     let json
     try {
