@@ -169,7 +169,7 @@ async function ensureAuthenticated() {
   if (choice === -1) { vlog('User cancelled sign-in'); return null }
 
   // Load the full Alexa web app — this establishes Alexa-specific session state
-  const alexaAppURL = 'https://alexa.amazon.com'
+  const alexaAppURL = baseURL.replace('://www.', '://alexa.')
   vlog(`Loading Alexa web app: ${alexaAppURL}`)
   await sessionView.loadURL(alexaAppURL)
   const pageHtml = await sessionView.getHTML()
